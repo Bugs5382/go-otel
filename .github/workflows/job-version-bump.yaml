@@ -2,9 +2,9 @@ name: Release Manager
 # Runs on every push to main, BEFORE the maintainer publishes the GitHub Release.
 # Anticipates the next version from release-drafter, writes CHANGELOG.md via the
 # Bugs5382 changelog action, and pushes a [skip ci] commit so main always carries
-# the prepped changelog. Go has no package manifest to bump, so unlike the npm
-# Release Manager there is no version-file step. Nothing tags here - the maintainer
-# publishes the Release manually, which creates the tag.
+# the prepped changelog. Go has no package manifest to bump, so there is no
+# version-file step. Nothing tags here - the maintainer publishes the Release
+# manually, which creates the tag.
 #
 # Manual dispatch with a changelog-body repairs a single release whose drafted
 # notes were empty (for example the first release, which release-drafter has no
