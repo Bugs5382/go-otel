@@ -1,0 +1,7 @@
+# Binaries / build
+*.out
+/dist/
+/tmp/
+# Go
+/vendor/
+coverage.txt
