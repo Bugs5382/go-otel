@@ -1,14 +1,27 @@
-# go-otel
+# go-otel 🔭
 
-> Tiny OpenTelemetry bootstrap for Go services
+> Tiny OpenTelemetry bootstrap for Go services — one call wires an OTLP/gRPC trace exporter into a global `TracerProvider` and installs W3C trace-context propagation.
 
-## Install
+## 📦 Install
 
 ```bash
 go get github.com/Bugs5382/go-otel
 ```
 
-## Develop
+## 🚀 Usage
+
+```go
+shutdown, err := otel.Init(ctx, "my-service", "localhost:4317")
+if err != nil {
+	log.Fatal(err)
+}
+defer shutdown(context.Background())
+```
+
+Spans export over OTLP/gRPC (insecure) to the given endpoint, tagged with
+`service.name`. Metrics and logs exporters are planned for later releases. 📈
+
+## 🛠 Develop
 
 ```bash
 task build    # go build ./...
@@ -24,6 +37,6 @@ by the governance hooks. Install them once per clone:
 bash .claude/hooks/install.sh
 ```
 
-## License
+## ⚖️ License
 
-MIT (c) 2026 Shane
+MIT © 2026 Shane

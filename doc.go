@@ -1,6 +1,5 @@
-// Package otel is Tiny OpenTelemetry bootstrap for Go services
-//
-// Replace this scaffold with the package's real implementation.
+// Package otel wires an OTLP gRPC trace exporter into a global TracerProvider.
+// Ships traces only for now; metrics and logs exporters arrive in later releases.
 package otel
 
 /*
