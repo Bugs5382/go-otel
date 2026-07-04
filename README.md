@@ -30,13 +30,6 @@ task lint     # gofmt check + golangci-lint + yamllint
 task license  # inject MIT headers (golic)
 ```
 
-Commit discipline, AI-tell/emoji blocking, and the pre-push gofmt/vet/lint/test gate are enforced
-by the governance hooks. Install them once per clone:
-
-```bash
-bash .claude/hooks/install.sh
-```
-
 ## ⚖️ License
 
 MIT © 2026 Shane
