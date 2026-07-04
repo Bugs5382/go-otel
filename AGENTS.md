@@ -5,36 +5,44 @@ hook-enforced rules). Keep this file current when the build, layout, or public A
 
 ## What this is
 
-Tiny OpenTelemetry bootstrap for Go services
-
-<!-- Fill in: what the project does, what it ships (library, service, action, CLI), and the one or
-two things an agent must understand before changing it. -->
+A tiny OpenTelemetry bootstrap library for Go services. A single `Init` wires
+OTLP/gRPC trace and metric exporters into the global Tracer and Meter providers
+over one shared resource, and the package adds instrument helpers plus RED HTTP
+middleware so consumers don't hand-roll setup.
 
 ## Using go-otel
 
-<!-- If this project is consumed by others (a library/plugin/action), describe the contract a
-consumer must respect: the single entry point, the public surface, required options, and anything
-that must not be bypassed. Delete this section for a leaf application. -->
+The public surface is small and additive; keep it stable:
+
+- `Init(ctx, service, otlpEndpoint) (shutdown func(context.Context) error, err error)` — sets up
+  traces and metrics on the same endpoint and installs W3C propagation. The `shutdown` flushes
+  both pipelines. Existing trace-only callers must keep working unchanged.
+- `Counter(name, description string) metric.Int64Counter` and
+  `Histogram(name, description, unit string) metric.Float64Histogram` — build instruments off the
+  global meter; they panic only on a malformed instrument name (a programming error).
+- `Metrics(next http.Handler) http.Handler` — RED middleware recording
+  `http.server.request.duration` and `http.server.request.count` with HTTP semconv attributes.
+  Depends on stdlib `net/http` only.
 
 ## Layout
 
-<!-- The directories that matter and what lives in each. Keep it short; point at the entry points. -->
-
-- `src/` - <what>
-- `<tests dir>/` - <what>
+- `otel.go` - `Init`: trace + metric providers, resource, propagation, joined shutdown.
+- `metrics.go` - `Counter`/`Histogram` instrument helpers.
+- `middleware.go` - `Metrics` RED HTTP middleware.
+- `doc.go` - package doc.
+- `*_test.go` - table-free tests; metrics tests assert via an SDK `ManualReader`, not a collector.
 
 ## Build, test, lint
 
-<!-- The exact commands. Pull these from package.json scripts (npm), the Taskfile (Go/Task), or
-pyproject (Python) so they stay accurate. -->
-
-- Build: `<command>`
-- Test: `<command>` (note any service/fixture the integration tests require)
-- Lint: `<command>`
-- License headers / docs: `<command>`
+- Build: `task build`
+- Test: `task test` (no external service required; tests use an in-process manual reader)
+- Lint: `task lint` (runs tests, then gofmt check + golangci-lint + yamllint)
+- License headers: `task license` (verify) / `task license:fix` (inject)
 
 ## Conventions and gotchas
 
 - See `CLAUDE.md` for the branch/commit/PR rules; they are enforced by the git hooks in
   `.claude/hooks` (run `bash .claude/hooks/install.sh` once per clone).
-- <project-specific conventions, non-obvious constraints, and traps an agent should know>
+- Keep `Init`'s signature stable — trace-only consumers depend on it. Add capabilities additively.
+- Traces and metrics use separate OTLP exporters (the SDK has no single dual-signal exporter) but
+  share one endpoint and one resource, so keep them constructed together in `Init`.

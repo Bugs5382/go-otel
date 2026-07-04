@@ -1,5 +1,7 @@
-// Package otel wires an OTLP gRPC trace exporter into a global TracerProvider.
-// Ships traces only for now; metrics and logs exporters arrive in later releases.
+// Package otel wires OTLP gRPC trace and metric exporters into global Tracer
+// and Meter providers from a single Init call, and provides convenience
+// instrument constructors plus RED HTTP middleware. A logs exporter arrives in
+// a later release.
 package otel
 
 /*
