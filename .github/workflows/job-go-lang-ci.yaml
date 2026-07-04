@@ -1,0 +1,57 @@
+name: GolangCI
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    services:
+      valkey:
+        image: valkey/valkey:8
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "valkey-cli ping" --health-interval 5s
+          --health-timeout 3s --health-retries 5
+    env:
+      TEST_REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test ./... -cover
+  lint:
+    name: GolangCI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: GolangCI
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          args: --timeout=3m

@@ -1,0 +1,105 @@
+name: Release Manager
+# Runs on every push to main, BEFORE the maintainer publishes the GitHub Release.
+# Anticipates the next version from release-drafter, writes CHANGELOG.md via the
+# Bugs5382 changelog action, and pushes a [skip ci] commit so main always carries
+# the prepped changelog. Go has no package manifest to bump, so unlike the npm
+# Release Manager there is no version-file step. Nothing tags here - the maintainer
+# publishes the Release manually, which creates the tag.
+#
+# Manual dispatch with a changelog-body repairs a single release whose drafted
+# notes were empty (for example the first release, which release-drafter has no
+# baseline to diff against). The body is written verbatim under the version header.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version to repair, e.g. v0.1.0 (optional; defaults to the drafted version)"
+        required: false
+      changelog-body:
+        description: "Changelog body written verbatim under the version header (optional repair)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  Update_Version:
+    name: 🚀 Update Changelog & Prep Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check release prerequisites
+        shell: bash
+        env:
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_PRIVATE_KEY" ]; then
+            echo "::error title=Release setup required::APP_PRIVATE_KEY is not set."
+            echo "One-time setup required before the Release Manager works (per repo):"
+            echo "  1. Install the Bugs5382 release GitHub App on this repository."
+            echo "  2. Add the APP_PRIVATE_KEY secret (the App private key), org or repo level."
+            echo "  3. Add the release App as a bypass actor on the branch ruleset, so the"
+            echo "     [skip ci] changelog push to main is not blocked."
+            echo "  The App Client ID is hard-coded in this workflow; only the above are manual."
+            exit 1
+          fi
+          echo "Release prerequisites present."
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: "Iv23ligVrrLzGPXe28dn"
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: 📂 Checkout Code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: 📝 Release Drafter (Anticipate Version)
+        id: drafter
+        uses: release-drafter/release-drafter@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🔎 Detect releasable changes
+        id: releasable
+        env:
+          BODY: ${{ steps.drafter.outputs.body }}
+          REPAIR_BODY: ${{ github.event.inputs.changelog-body }}
+        run: |
+          # A manual repair (changelog-body) always proceeds. Otherwise only run
+          # when release-drafter listed at least one PR; with nothing releasable
+          # (every change excluded, e.g. skip-changelog) skip the changelog/commit.
+          if [ -n "$REPAIR_BODY" ] || printf '%s' "$BODY" | grep -qE '\(#[0-9]+\)'; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No releasable changes since the last release; skipping the prep commit."
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 📤 Run Changelog Action
+        if: steps.releasable.outputs.yes == 'true'
+        uses: bugs5382/changelog-updater-action@v0.4.0
+        with:
+          tag: ${{ github.event.inputs.tag || format('v{0}', steps.drafter.outputs.resolved_version) }}
+          notes: ${{ steps.drafter.outputs.body }}
+          changelog-body: ${{ github.event.inputs.changelog-body }}
+          path: .
+          diff: "true"
+
+      - name: 📤 Commit and Push Changelog
+        if: steps.releasable.outputs.yes == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: "chore(pre-release): ${{ github.event.inputs.tag || format('v{0}', steps.drafter.outputs.resolved_version) }} [skip ci]"
+          # Commit as the triggering owner, not github-actions[bot]; the push
+          # still uses the release App token to bypass the [skip ci] rule.
+          commit_user_name: ${{ github.actor }}
+          commit_user_email: ${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com
+          commit_author: ${{ github.actor }} <${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com>

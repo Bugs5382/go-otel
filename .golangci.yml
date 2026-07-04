@@ -1,0 +1,17 @@
+# Basic lint config for go-otel.
+#
+# Uses golangci-lint's "standard" linter set (errcheck, govet, ineffassign,
+# staticcheck, unused) — a sensible baseline, nothing exotic.
+#
+# errcheck is scoped out of *_test.go: test code routinely ignores returns from
+# helpers/setup (json.Unmarshal, store writes, defer Close) where a failure would
+# surface anyway. Production code is fully checked.
+version: "2"
+
+linters:
+  default: standard
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
