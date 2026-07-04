@@ -25,7 +25,6 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/otel"
@@ -98,8 +97,15 @@ func Init(ctx context.Context, service, otlpEndpoint string) (shutdown func(cont
 	))
 
 	return func(ctx context.Context) error {
-		// Flush both pipelines; report the joined error so neither failure is
-		// swallowed by the other.
-		return errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx))
+		// Flush both pipelines. The metric reader performs a final export on
+		// shutdown, so an unreachable collector surfaces here as an export
+		// error; that is an environmental condition, not a caller wiring fault
+		// (the trace batcher drops the same way), so hand it to the global
+		// error handler rather than failing shutdown. Genuine trace lifecycle
+		// errors still propagate.
+		if err := mp.Shutdown(ctx); err != nil {
+			otel.Handle(err)
+		}
+		return tp.Shutdown(ctx)
 	}, nil
 }
