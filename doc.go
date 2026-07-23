@@ -2,6 +2,23 @@
 // and Meter providers from a single Init call, and provides convenience
 // instrument constructors plus RED HTTP middleware. A logs exporter arrives in
 // a later release.
+//
+// Counter, Histogram, and Metrics return or accept raw go.opentelemetry.io/otel
+// types and remain unchanged for existing callers. A consumer that wants to
+// avoid any raw otel import in its own code should instead use:
+//
+//   - Attr and KV to build a neutral attribute (no attribute.KeyValue).
+//   - NewCounter/NewHistogram, returning the neutral CounterMetric/
+//     HistogramMetric interfaces (no metric.Int64Counter/Float64Histogram).
+//   - GRPCServerStatsHandler/GRPCClientStatsHandler, returning
+//     google.golang.org/grpc/stats.Handler (a gRPC transport type, not otel)
+//     for grpc.StatsHandler/grpc.WithStatsHandler, so wiring gRPC
+//     instrumentation never requires importing otelgrpc directly.
+//
+// The neutral interfaces are named CounterMetric/HistogramMetric rather than
+// Counter/Histogram because those names are already taken by the raw-returning
+// functions above, and Go does not allow a function and a type to share a name
+// in one package.
 package otel
 
 /*

@@ -126,6 +126,55 @@ func TestHistogramRecords(t *testing.T) {
 	}
 }
 
+func TestNewCounterRecordsWithNeutralAttrs(t *testing.T) {
+	reader := installManualReader(t)
+
+	c := NewCounter("test.neutral.requests", "count of test requests")
+	c.Add(context.Background(), 3, KV("outcome", "ok"), KV("retries", int64(1)))
+
+	m := findMetric(t, reader, "test.neutral.requests")
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", m.Data)
+	}
+	if got := len(sum.DataPoints); got != 1 {
+		t.Fatalf("expected 1 data point, got %d", got)
+	}
+	if sum.DataPoints[0].Value != 3 {
+		t.Fatalf("expected value 3, got %d", sum.DataPoints[0].Value)
+	}
+	attrs := sum.DataPoints[0].Attributes
+	if v, ok := attrs.Value("outcome"); !ok || v.AsString() != "ok" {
+		t.Fatalf("expected outcome=ok, got %v (present=%v)", v, ok)
+	}
+	if v, ok := attrs.Value("retries"); !ok || v.AsInt64() != 1 {
+		t.Fatalf("expected retries=1, got %v (present=%v)", v, ok)
+	}
+}
+
+func TestNewHistogramRecordsWithNeutralAttrs(t *testing.T) {
+	reader := installManualReader(t)
+
+	h := NewHistogram("test.neutral.latency", "latency of test op", "s")
+	h.Record(context.Background(), 0.25, KV("outcome", "ok"))
+	h.Record(context.Background(), 0.75, KV("outcome", "ok"))
+
+	m := findMetric(t, reader, "test.neutral.latency")
+	if m.Unit != "s" {
+		t.Fatalf("expected unit \"s\", got %q", m.Unit)
+	}
+	hist, ok := m.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", m.Data)
+	}
+	if got := len(hist.DataPoints); got != 1 {
+		t.Fatalf("expected 1 data point, got %d", got)
+	}
+	if hist.DataPoints[0].Count != 2 {
+		t.Fatalf("expected count 2, got %d", hist.DataPoints[0].Count)
+	}
+}
+
 func TestMetricsMiddlewareRecords(t *testing.T) {
 	reader := installManualReader(t)
 
