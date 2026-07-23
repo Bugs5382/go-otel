@@ -19,18 +19,32 @@ The public surface is small and additive; keep it stable:
   both pipelines. Existing trace-only callers must keep working unchanged.
 - `Counter(name, description string) metric.Int64Counter` and
   `Histogram(name, description, unit string) metric.Float64Histogram` — build instruments off the
-  global meter; they panic only on a malformed instrument name (a programming error).
+  global meter; they panic only on a malformed instrument name (a programming error). Raw-returning;
+  kept unchanged for existing callers.
 - `Metrics(next http.Handler) http.Handler` — RED middleware recording
   `http.server.request.duration` and `http.server.request.count` with HTTP semconv attributes.
   Depends on stdlib `net/http` only.
+- Neutral surface, for callers that must never import a raw `go.opentelemetry.io/otel/...` package:
+  - `Attr{Key string; Val any}` and `KV(key string, val any) Attr`.
+  - `NewCounter(name, description string) CounterMetric` and
+    `NewHistogram(name, description, unit string) HistogramMetric` — wrap the same instruments
+    `Counter`/`Histogram` build. Named `*Metric`, not `Counter`/`Histogram`, because those names are
+    already the raw-returning functions above (a func and a type can't share a name in one package).
+  - `GRPCServerStatsHandler() stats.Handler` / `GRPCClientStatsHandler() stats.Handler` — wrap
+    `otelgrpc.NewServerHandler`/`NewClientHandler`; the return type is a `google.golang.org/grpc/stats`
+    type (gRPC transport, not otel), so a caller wires gRPC instrumentation without an otelgrpc import.
 
 ## Layout
 
 - `otel.go` - `Init`: trace + metric providers, resource, propagation, joined shutdown.
-- `metrics.go` - `Counter`/`Histogram` instrument helpers.
+- `metrics.go` - `Counter`/`Histogram` raw instrument helpers, plus the neutral `CounterMetric`/
+  `HistogramMetric` interfaces and `NewCounter`/`NewHistogram` constructors that wrap them.
+- `attr.go` - neutral `Attr`/`KV`, and the internal conversion to `attribute.KeyValue`.
+- `grpc.go` - `GRPCServerStatsHandler`/`GRPCClientStatsHandler`, wrapping `otelgrpc`.
 - `middleware.go` - `Metrics` RED HTTP middleware.
 - `doc.go` - package doc.
 - `*_test.go` - table-free tests; metrics tests assert via an SDK `ManualReader`, not a collector.
+- `example_test.go` - runnable `Example`/`ExampleGRPCServerStatsHandler` for the neutral surface.
 
 ## Build, test, lint
 

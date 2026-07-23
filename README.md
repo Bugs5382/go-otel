@@ -49,6 +49,42 @@ mux.HandleFunc("GET /items/{id}", itemsHandler)
 http.ListenAndServe(":8080", otel.Metrics(mux))
 ```
 
+## 🧼 Neutral surface (no raw otel imports)
+
+`Counter`/`Histogram` above return the raw `go.opentelemetry.io/otel/metric`
+types, and stay that way for existing callers. If you'd rather your own code
+never imports a `go.opentelemetry.io/otel/...` package, use the neutral
+constructors instead — they wrap the same instruments behind interfaces built
+on a neutral attribute type:
+
+```go
+orders := otel.NewCounter("orders.placed", "Orders placed.")
+orders.Add(ctx, 1, otel.KV("outcome", "ok"), otel.KV("region", "us-east"))
+
+latency := otel.NewHistogram("db.query.duration", "Query duration.", "s")
+latency.Record(ctx, 0.042, otel.KV("outcome", "ok"))
+```
+
+`NewCounter`/`NewHistogram` return `CounterMetric`/`HistogramMetric` — not
+`Counter`/`Histogram` — because those names are already taken by the
+raw-returning functions above (a function and a type can't share a name in one
+Go package). `KV(key string, val any) Attr` accepts `string`, `bool`, `int`,
+`int64`, `float64`, and slices of those directly; any other value type is
+rendered with `fmt.Sprintf`.
+
+## 🔌 gRPC server instrumentation
+
+`GRPCServerStatsHandler`/`GRPCClientStatsHandler` wrap `otelgrpc` internally
+and hand back a plain `google.golang.org/grpc/stats.Handler`, so wiring gRPC
+tracing/metrics never requires importing `otelgrpc` (or any other raw otel
+package) yourself:
+
+```go
+s := grpc.NewServer(grpc.StatsHandler(otel.GRPCServerStatsHandler()))
+
+conn, err := grpc.NewClient(target, grpc.WithStatsHandler(otel.GRPCClientStatsHandler()))
+```
+
 ## 🛠 Develop
 
 ```bash
