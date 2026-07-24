@@ -24,6 +24,8 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"time"
 
@@ -100,4 +102,33 @@ func (w *statusWriter) WriteHeader(code int) {
 func (w *statusWriter) Write(b []byte) (int, error) {
 	w.wroteHeader = true
 	return w.ResponseWriter.Write(b)
+}
+
+// Hijack forwards connection hijacking to the wrapped ResponseWriter so
+// WebSocket upgrades and other take-over-the-socket handlers keep working on
+// instrumented routes. Embedding the http.ResponseWriter interface promotes
+// only Header/Write/WriteHeader, so without this passthrough *statusWriter
+// would silently fail the http.Hijacker assertion (issue #8).
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+// Flush forwards streaming flushes (SSE, chunked responses) to the wrapped
+// ResponseWriter when it supports http.Flusher (issue #8).
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Push forwards HTTP/2 server push to the wrapped ResponseWriter when it
+// supports http.Pusher (issue #8).
+func (w *statusWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
 }
