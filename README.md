@@ -23,7 +23,23 @@ defer shutdown(context.Background())
 ```
 
 Traces export over OTLP/gRPC (insecure) to the given endpoint. A logs exporter
-is planned for a later release. 📈
+is planned for a later release.
+
+### Running without a collector
+
+Pass an empty endpoint to run with no collector at all (local development,
+tests, or an environment that has none). `Init` still installs the tracer and
+meter providers and the W3C propagator, so spans get real trace IDs and an
+incoming `traceparent` is continued and passed on to downstream calls. No
+exporter is built: spans and metrics are dropped, and `shutdown` has nothing to
+flush.
+
+To make export opt-in through the environment, pass the standard variable
+straight through (it must be a bare `host:port`, the same as any endpoint):
+
+```go
+shutdown, err := otel.Init(ctx, "my-service", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+```
 
 ## 📊 Metrics
 

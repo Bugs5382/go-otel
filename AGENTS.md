@@ -16,7 +16,9 @@ The public surface is small and additive; keep it stable:
 
 - `Init(ctx, service, otlpEndpoint) (shutdown func(context.Context) error, err error)` — sets up
   traces and metrics on the same endpoint and installs W3C propagation. The `shutdown` flushes
-  both pipelines. Existing trace-only callers must keep working unchanged.
+  both pipelines. An empty (or all-whitespace) endpoint installs the providers and propagator with
+  no exporter, so trace context still propagates while spans and metrics are dropped. Existing
+  trace-only callers must keep working unchanged.
 - `Counter(name, description string) metric.Int64Counter` and
   `Histogram(name, description, unit string) metric.Float64Histogram` — build instruments off the
   global meter; they panic only on a malformed instrument name (a programming error). Raw-returning;
@@ -36,7 +38,8 @@ The public surface is small and additive; keep it stable:
 
 ## Layout
 
-- `otel.go` - `Init`: trace + metric providers, resource, propagation, joined shutdown.
+- `otel.go` - `Init`: trace + metric providers (exporting, or local when no endpoint), resource,
+  propagation, joined shutdown.
 - `metrics.go` - `Counter`/`Histogram` raw instrument helpers, plus the neutral `CounterMetric`/
   `HistogramMetric` interfaces and `NewCounter`/`NewHistogram` constructors that wrap them.
 - `attr.go` - neutral `Attr`/`KV`, and the internal conversion to `attribute.KeyValue`.
