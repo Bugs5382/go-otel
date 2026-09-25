@@ -1,7 +1,9 @@
 // Package otel wires OTLP gRPC trace and metric exporters into global Tracer
 // and Meter providers from a single Init call, and provides convenience
 // instrument constructors plus RED HTTP middleware. A logs exporter arrives in
-// a later release.
+// a later release. With an empty endpoint, Init installs the providers and the
+// W3C propagator without any exporter, so trace context still propagates while
+// spans and metrics are dropped.
 //
 // Counter, Histogram, and Metrics return or accept raw go.opentelemetry.io/otel
 // types and remain unchanged for existing callers. A consumer that wants to

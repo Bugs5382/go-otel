@@ -26,6 +26,7 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -43,6 +44,14 @@ import (
 // metrics ride the same endpoint and share one resource, so a single call wires
 // both. The returned shutdown func flushes and closes both providers; callers
 // should defer it.
+//
+// An empty (or all-whitespace) otlpEndpoint runs Init without a collector: the
+// providers and the W3C propagator are installed as usual, so spans get real
+// trace IDs and trace context still flows across process boundaries, but no
+// exporter is built and spans and metrics are dropped. This suits local
+// development, tests, and environments with no collector. Pass
+// os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") to make export opt-in by
+// environment.
 func Init(ctx context.Context, service, otlpEndpoint string) (shutdown func(context.Context) error, err error) {
 	res, err := resource.Merge(
 		resource.Default(),
@@ -55,37 +64,17 @@ func Init(ctx context.Context, service, otlpEndpoint string) (shutdown func(cont
 		return nil, fmt.Errorf("build resource: %w", err)
 	}
 
-	traceExp, err := otlptrace.New(ctx,
-		otlptracegrpc.NewClient(
-			otlptracegrpc.WithEndpoint(otlpEndpoint),
-			otlptracegrpc.WithInsecure(),
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create otlp trace exporter: %w", err)
+	var tp *sdktrace.TracerProvider
+	var mp *sdkmetric.MeterProvider
+	if strings.TrimSpace(otlpEndpoint) == "" {
+		tp, mp = newLocalProviders(res)
+	} else {
+		tp, mp, err = newExportingProviders(ctx, res, otlpEndpoint)
+		if err != nil {
+			return nil, err
+		}
 	}
-
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExp),
-		sdktrace.WithResource(res),
-	)
 	otel.SetTracerProvider(tp)
-
-	metricExp, err := otlpmetricgrpc.New(ctx,
-		otlpmetricgrpc.WithEndpoint(otlpEndpoint),
-		otlpmetricgrpc.WithInsecure(),
-	)
-	if err != nil {
-		// Roll back the trace provider so a failed metrics wire-up leaves no
-		// half-initialized global state behind.
-		_ = tp.Shutdown(ctx)
-		return nil, fmt.Errorf("create otlp metric exporter: %w", err)
-	}
-
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)),
-		sdkmetric.WithResource(res),
-	)
 	otel.SetMeterProvider(mp)
 
 	// Install a global text-map propagator so W3C trace context and baggage
@@ -108,4 +97,49 @@ func Init(ctx context.Context, service, otlpEndpoint string) (shutdown func(cont
 		}
 		return tp.Shutdown(ctx)
 	}, nil
+}
+
+// newLocalProviders builds providers with no exporter or reader attached.
+// Spans are still sampled and carry valid span contexts, so propagation works;
+// they are simply never exported (Refs #12).
+func newLocalProviders(res *resource.Resource) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider) {
+	tp := sdktrace.NewTracerProvider(sdktrace.WithResource(res))
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithResource(res))
+	return tp, mp
+}
+
+// newExportingProviders builds providers that batch spans and periodically
+// push metrics over OTLP gRPC (insecure) to endpoint.
+func newExportingProviders(ctx context.Context, res *resource.Resource, endpoint string) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, error) {
+	traceExp, err := otlptrace.New(ctx,
+		otlptracegrpc.NewClient(
+			otlptracegrpc.WithEndpoint(endpoint),
+			otlptracegrpc.WithInsecure(),
+		),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create otlp trace exporter: %w", err)
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(traceExp),
+		sdktrace.WithResource(res),
+	)
+
+	metricExp, err := otlpmetricgrpc.New(ctx,
+		otlpmetricgrpc.WithEndpoint(endpoint),
+		otlpmetricgrpc.WithInsecure(),
+	)
+	if err != nil {
+		// Shut the trace provider down so a failed metrics wire-up leaves no
+		// half-initialized state behind.
+		_ = tp.Shutdown(ctx)
+		return nil, nil, fmt.Errorf("create otlp metric exporter: %w", err)
+	}
+
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)),
+		sdkmetric.WithResource(res),
+	)
+	return tp, mp, nil
 }
