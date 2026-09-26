@@ -1,6 +1,6 @@
 # go-otel 🔭
 
-> Tiny OpenTelemetry bootstrap for Go services — one call wires OTLP/gRPC trace **and** metric exporters into global providers, installs W3C trace-context propagation, and ships instrument helpers plus RED HTTP middleware.
+> 📡 Tiny OpenTelemetry bootstrap for Go services — one call wires OTLP/gRPC trace **and** metric exporters into global providers, installs W3C trace-context propagation, and ships instrument helpers plus RED HTTP middleware.
 
 ## 📦 Install
 
@@ -23,7 +23,7 @@ defer shutdown(context.Background())
 ```
 
 Traces export over OTLP/gRPC (insecure) to the given endpoint. A logs exporter
-is planned for a later release.
+is planned for a later release. 📈
 
 ### Running without a collector
 
