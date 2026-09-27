@@ -60,6 +60,8 @@ The public surface is small and additive; keep it stable:
 
 - See `CLAUDE.md` for the branch/commit/PR rules; they are enforced by the git hooks in
   `.claude/hooks` (run `bash .claude/hooks/install.sh` once per clone).
+- Open every PR as a draft. CI skips drafts, so run the full checks locally, push once they pass,
+  and mark the PR ready when the work is finished; see CLAUDE.md "CI and Actions minutes".
 - Keep `Init`'s signature stable — trace-only consumers depend on it. Add capabilities additively.
 - Traces and metrics use separate OTLP exporters (the SDK has no single dual-signal exporter) but
   share one endpoint and one resource, so keep them constructed together in `Init`.
