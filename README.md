@@ -8,6 +8,10 @@
 go get github.com/Bugs5382/go-otel
 ```
 
+Requires OpenTelemetry Go v1.45.0 or later (the `go.opentelemetry.io/otel`
+v1.45.0 module set). Releases up to v1.3.1 fail in `Init` with a schema URL
+conflict once a service moves to v1.45.0, so upgrade go-otel along with otel.
+
 ## 🚀 Usage
 
 `Init` sets up both traces and metrics on the same OTLP/gRPC endpoint, sharing
