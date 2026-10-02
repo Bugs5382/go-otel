@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -36,7 +37,6 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 )
 
 // Init configures global Tracer and Meter providers that export over OTLP gRPC
@@ -53,13 +53,7 @@ import (
 // os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") to make export opt-in by
 // environment.
 func Init(ctx context.Context, service, otlpEndpoint string) (shutdown func(context.Context) error, err error) {
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(service),
-		),
-	)
+	res, err := newResource(service)
 	if err != nil {
 		return nil, fmt.Errorf("build resource: %w", err)
 	}
@@ -97,6 +91,18 @@ func Init(ctx context.Context, service, otlpEndpoint string) (shutdown func(cont
 		}
 		return tp.Shutdown(ctx)
 	}, nil
+}
+
+// newResource layers service.name over the SDK's default resource. The service
+// part is schemaless, so the merge keeps the SDK default's schema URL instead
+// of pinning a semconv version of our own: resource.Merge rejects two
+// different non-empty schema URLs, and pinning one broke Init as soon as the
+// SDK moved to a newer semconv (Refs #20).
+func newResource(service string) (*resource.Resource, error) {
+	return resource.Merge(
+		resource.Default(),
+		resource.NewSchemaless(attribute.String("service.name", service)),
+	)
 }
 
 // newLocalProviders builds providers with no exporter or reader attached.
