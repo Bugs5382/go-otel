@@ -33,6 +33,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -102,6 +103,25 @@ func TestInitWithoutEndpointPropagatesAndDrops(t *testing.T) {
 				t.Fatalf("shutdown returned error: %v", err)
 			}
 		})
+	}
+}
+
+// The resource must carry the SDK default's schema URL, whatever semconv
+// version the SDK is on, so Init never fails with ErrSchemaURLConflict when
+// the SDK moves to a newer semconv (Refs #20).
+func TestNewResourceUsesSDKSchemaURL(t *testing.T) {
+	res, err := newResource("test-service")
+	if err != nil {
+		t.Fatalf("newResource returned error: %v", err)
+	}
+	if got, want := res.SchemaURL(), resource.Default().SchemaURL(); got != want {
+		t.Fatalf("schema URL = %q, want the SDK default %q", got, want)
+	}
+	if v, ok := res.Set().Value("service.name"); !ok || v.AsString() != "test-service" {
+		t.Fatalf("service.name = %q (present %v), want %q", v.AsString(), ok, "test-service")
+	}
+	if _, err := resource.Merge(resource.Default(), res); err != nil {
+		t.Fatalf("merging with the SDK default resource failed: %v", err)
 	}
 }
 
