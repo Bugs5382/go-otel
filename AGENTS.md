@@ -15,8 +15,9 @@ middleware so consumers don't hand-roll setup.
 The public surface is small and additive; keep it stable:
 
 - `Init(ctx, service, otlpEndpoint) (shutdown func(context.Context) error, err error)` — sets up
-  traces and metrics on the same endpoint and installs W3C propagation. The `shutdown` flushes
-  both pipelines. An empty (or all-whitespace) endpoint installs the providers and propagator with
+  traces and metrics on the same endpoint and installs W3C propagation. The endpoint is a bare
+  `host:port` (insecure) or an `http`/`https` URL (plaintext or TLS, by scheme); any other URL
+  fails `Init`. The `shutdown` flushes both pipelines. An empty (or all-whitespace) endpoint installs the providers and propagator with
   no exporter, so trace context still propagates while spans and metrics are dropped. Existing
   trace-only callers must keep working unchanged.
 - `Counter(name, description string) metric.Int64Counter` and

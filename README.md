@@ -26,8 +26,18 @@ if err != nil {
 defer shutdown(context.Background())
 ```
 
-Traces export over OTLP/gRPC (insecure) to the given endpoint. A logs exporter
-is planned for a later release. 📈
+Traces export over OTLP/gRPC to the given endpoint. A logs exporter is planned
+for a later release. 📈
+
+The endpoint is a bare `host:port` or a URL with a port:
+
+| Endpoint | Transport |
+| --- | --- |
+| `collector:4317` | plaintext |
+| `http://collector:4317` | plaintext |
+| `https://collector:4317` | TLS |
+
+Any other URL scheme, or a URL with no host, makes `Init` return an error.
 
 ### Running without a collector
 
@@ -39,7 +49,8 @@ exporter is built: spans and metrics are dropped, and `shutdown` has nothing to
 flush.
 
 To make export opt-in through the environment, pass the standard variable
-straight through (it must be a bare `host:port`, the same as any endpoint):
+straight through. Use the URL form, because the OpenTelemetry SDK also reads
+that variable and logs parse errors on a bare `host:port`:
 
 ```go
 shutdown, err := otel.Init(ctx, "my-service", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
