@@ -5,6 +5,10 @@
 // W3C propagator without any exporter, so trace context still propagates while
 // spans and metrics are dropped.
 //
+// InitWithOptions is Init with options, such as WithInsecureSkipVerify for a
+// collector with a self-signed certificate. ExportState reports the last
+// success and last error of each signal, for health and status pages.
+//
 // Counter, Histogram, and Metrics return or accept raw go.opentelemetry.io/otel
 // types and remain unchanged for existing callers. A consumer that wants to
 // avoid any raw otel import in its own code should instead use:

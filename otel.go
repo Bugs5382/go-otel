@@ -25,6 +25,8 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -38,6 +40,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"google.golang.org/grpc/credentials"
 )
 
 // Init configures global Tracer and Meter providers that export over OTLP gRPC
@@ -55,6 +58,32 @@ import (
 // os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") to make export opt-in by
 // environment.
 func Init(ctx context.Context, service, otlpEndpoint string) (shutdown func(context.Context) error, err error) {
+	return InitWithOptions(ctx, service, otlpEndpoint)
+}
+
+// Option changes how InitWithOptions sets up the exporters.
+type Option func(*config)
+
+type config struct {
+	insecureSkipVerify bool
+}
+
+// WithInsecureSkipVerify turns off certificate validation on an https endpoint
+// when skip is true, for a collector with a private or self-signed certificate.
+// The connection stays encrypted but the collector is not authenticated, so
+// anyone who can intercept it can read the telemetry and the OTLP headers. It
+// has no effect on a plaintext endpoint.
+func WithInsecureSkipVerify(skip bool) Option {
+	return func(c *config) { c.insecureSkipVerify = skip }
+}
+
+// InitWithOptions is Init with options. With no options the two are the same.
+func InitWithOptions(ctx context.Context, service, otlpEndpoint string, opts ...Option) (shutdown func(context.Context) error, err error) {
+	var cfg config
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	res, err := newResource(service)
 	if err != nil {
 		return nil, fmt.Errorf("build resource: %w", err)
@@ -62,16 +91,19 @@ func Init(ctx context.Context, service, otlpEndpoint string) (shutdown func(cont
 
 	var tp *sdktrace.TracerProvider
 	var mp *sdkmetric.MeterProvider
+	var tracker *exportTracker
 	if strings.TrimSpace(otlpEndpoint) == "" {
 		tp, mp = newLocalProviders(res)
 	} else {
-		tp, mp, err = newExportingProviders(ctx, res, otlpEndpoint)
+		tracker = newExportTracker(otlpEndpoint)
+		tp, mp, err = newExportingProviders(ctx, res, otlpEndpoint, cfg, tracker)
 		if err != nil {
 			return nil, err
 		}
 	}
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
+	activeTracker.Store(tracker)
 
 	// Install a global text-map propagator so W3C trace context and baggage
 	// flow across process boundaries. Without this, injected/extracted carriers
@@ -119,8 +151,9 @@ func newLocalProviders(res *resource.Resource) (*sdktrace.TracerProvider, *sdkme
 // exporterOptions turns endpoint into the trace and metric exporter options. A
 // bare host:port is insecure. A URL follows its scheme: http is plaintext and
 // https is TLS. The SDK's WithEndpointURL only logs a bad URL and falls back to
-// its default collector, so a bad one is rejected here.
-func exporterOptions(endpoint string) ([]otlptracegrpc.Option, []otlpmetricgrpc.Option, error) {
+// its default collector, so a bad one is rejected here, without repeating the
+// URL's password in the error.
+func exporterOptions(endpoint string, cfg config) ([]otlptracegrpc.Option, []otlpmetricgrpc.Option, error) {
 	if !strings.Contains(endpoint, "://") {
 		return []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(endpoint), otlptracegrpc.WithInsecure()},
 			[]otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(endpoint), otlpmetricgrpc.WithInsecure()},
@@ -128,23 +161,32 @@ func exporterOptions(endpoint string) ([]otlptracegrpc.Option, []otlpmetricgrpc.
 	}
 	u, err := url.Parse(endpoint)
 	if err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
 		return nil, nil, fmt.Errorf("parse otlp endpoint: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, nil, fmt.Errorf("otlp endpoint scheme %q: want http or https", u.Scheme)
 	}
 	if u.Host == "" {
-		return nil, nil, fmt.Errorf("otlp endpoint %q has no host", endpoint)
+		return nil, nil, fmt.Errorf("otlp endpoint %q has no host", u.Redacted())
 	}
-	return []otlptracegrpc.Option{otlptracegrpc.WithEndpointURL(endpoint)},
-		[]otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpointURL(endpoint)},
-		nil
+	traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpointURL(endpoint)}
+	metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpointURL(endpoint)}
+	if u.Scheme == "https" && cfg.insecureSkipVerify {
+		creds := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true})
+		traceOpts = append(traceOpts, otlptracegrpc.WithTLSCredentials(creds))
+		metricOpts = append(metricOpts, otlpmetricgrpc.WithTLSCredentials(creds))
+	}
+	return traceOpts, metricOpts, nil
 }
 
 // newExportingProviders builds providers that batch spans and periodically
-// push metrics over OTLP gRPC to endpoint.
-func newExportingProviders(ctx context.Context, res *resource.Resource, endpoint string) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, error) {
-	traceOpts, metricOpts, err := exporterOptions(endpoint)
+// push metrics over OTLP gRPC to endpoint, reporting each export to tracker.
+func newExportingProviders(ctx context.Context, res *resource.Resource, endpoint string, cfg config, tracker *exportTracker) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, error) {
+	traceOpts, metricOpts, err := exporterOptions(endpoint, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -155,7 +197,7 @@ func newExportingProviders(ctx context.Context, res *resource.Resource, endpoint
 	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExp),
+		sdktrace.WithBatcher(trackedSpanExporter{SpanExporter: traceExp, tracker: tracker}),
 		sdktrace.WithResource(res),
 	)
 
@@ -168,7 +210,7 @@ func newExportingProviders(ctx context.Context, res *resource.Resource, endpoint
 	}
 
 	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(trackedMetricExporter{Exporter: metricExp, tracker: tracker})),
 		sdkmetric.WithResource(res),
 	)
 	return tp, mp, nil

@@ -39,6 +39,21 @@ The endpoint is a bare `host:port` or a URL with a port:
 
 Any other URL scheme, or a URL with no host, makes `Init` return an error.
 
+### Self-signed collectors
+
+An `https` endpoint verifies the collector's certificate against the system
+pool. For a collector with a private or self-signed certificate, turn that off
+with `InitWithOptions`, which is `Init` plus options:
+
+```go
+shutdown, err := otel.InitWithOptions(ctx, "my-service", "https://collector:4317",
+	otel.WithInsecureSkipVerify(true))
+```
+
+⚠️ The connection stays encrypted, but the collector is no longer authenticated:
+anyone who can intercept the connection can read your telemetry and OTLP
+headers. The option has no effect on a plaintext endpoint.
+
 ### Running without a collector
 
 Pass an empty endpoint to run with no collector at all (local development,
@@ -55,6 +70,34 @@ that variable and logs parse errors on a bare `host:port`:
 ```go
 shutdown, err := otel.Init(ctx, "my-service", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 ```
+
+## 🩺 Export state
+
+Span and metric exports run in the background, so a failed one never reaches
+your code. `ExportState` reports how they went, for a health or status page:
+
+```go
+state := otel.ExportState()
+if !state.Configured {
+	return "no collector"
+}
+if state.Traces.LastErrorAt.After(state.Traces.LastSuccess) {
+	return "traces failing: " + state.Traces.LastError
+}
+```
+
+`Traces` and `Metrics` each hold `LastSuccess`, `LastErrorAt` and `LastError`. A
+zero time means that outcome hasn't happened yet, and `LastError` stays after a
+later success, so compare the two times. Both signals fill in on the exporters'
+own schedules: about 5 seconds for spans and 60 seconds for metrics.
+
+`Configured` is false before `Init` and after an `Init` with an empty endpoint.
+The state follows the latest successful `Init`, and is safe to read from any
+goroutine. `LastError` has the endpoint password, any URL userinfo and the values
+of the `OTEL_EXPORTER_OTLP_HEADERS` variables removed, even if a collector echoes
+them back. A header set some other way isn't known to go-otel, and neither is a
+secret a collector makes up on its own, so treat `LastError` as text for
+operators.
 
 ## 📊 Metrics
 

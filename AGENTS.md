@@ -20,6 +20,12 @@ The public surface is small and additive; keep it stable:
   fails `Init`. The `shutdown` flushes both pipelines. An empty (or all-whitespace) endpoint installs the providers and propagator with
   no exporter, so trace context still propagates while spans and metrics are dropped. Existing
   trace-only callers must keep working unchanged.
+- `InitWithOptions(ctx, service, otlpEndpoint, opts ...Option)` — `Init` with options; `Init` calls it
+  with none. `WithInsecureSkipVerify(bool)` turns off certificate validation on `https` endpoints and
+  does nothing on plaintext ones.
+- `ExportState() ExportStatus` — `Configured`, plus a `SignalStatus` (`LastSuccess`, `LastErrorAt`,
+  `LastError`) each for `Traces` and `Metrics`. Follows the latest successful `Init`; zero with no
+  exporters. `LastError` is redacted text, never the raw error.
 - `Counter(name, description string) metric.Int64Counter` and
   `Histogram(name, description, unit string) metric.Float64Histogram` — build instruments off the
   global meter; they panic only on a malformed instrument name (a programming error). Raw-returning;
@@ -39,8 +45,9 @@ The public surface is small and additive; keep it stable:
 
 ## Layout
 
-- `otel.go` - `Init`: trace + metric providers (exporting, or local when no endpoint), resource,
-  propagation, joined shutdown.
+- `otel.go` - `Init`/`InitWithOptions`: trace + metric providers (exporting, or local when no
+  endpoint), resource, propagation, joined shutdown, options.
+- `export.go` - `ExportState`, the exporter wrappers that feed it, and error redaction.
 - `metrics.go` - `Counter`/`Histogram` raw instrument helpers, plus the neutral `CounterMetric`/
   `HistogramMetric` interfaces and `NewCounter`/`NewHistogram` constructors that wrap them.
 - `attr.go` - neutral `Attr`/`KV`, and the internal conversion to `attribute.KeyValue`.
@@ -48,12 +55,13 @@ The public surface is small and additive; keep it stable:
 - `middleware.go` - `Metrics` RED HTTP middleware.
 - `doc.go` - package doc.
 - `*_test.go` - table-free tests; metrics tests assert via an SDK `ManualReader`, not a collector.
+  `export_test.go` runs a real in-process OTLP/gRPC collector, with TLS where it matters.
 - `example_test.go` - runnable `Example`/`ExampleGRPCServerStatsHandler` for the neutral surface.
 
 ## Build, test, lint
 
 - Build: `task build`
-- Test: `task test` (no external service required; tests use an in-process manual reader)
+- Test: `task test` (no external service required; tests use an in-process manual reader and collector)
 - Lint: `task lint` (runs tests, then gofmt check + golangci-lint + yamllint)
 - License headers: `task license` (verify) / `task license:fix` (inject)
 
