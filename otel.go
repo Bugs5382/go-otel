@@ -26,6 +26,7 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -40,10 +41,11 @@ import (
 )
 
 // Init configures global Tracer and Meter providers that export over OTLP gRPC
-// (insecure) to otlpEndpoint, tagged with service.name=service. Traces and
-// metrics ride the same endpoint and share one resource, so a single call wires
-// both. The returned shutdown func flushes and closes both providers; callers
-// should defer it.
+// to otlpEndpoint, tagged with service.name=service. otlpEndpoint is a bare
+// host:port (insecure) or an http or https URL (plaintext or TLS, by scheme).
+// Traces and metrics ride the same endpoint and share one resource, so a single
+// call wires both. The returned shutdown func flushes and closes both
+// providers; callers should defer it.
 //
 // An empty (or all-whitespace) otlpEndpoint runs Init without a collector: the
 // providers and the W3C propagator are installed as usual, so spans get real
@@ -114,15 +116,40 @@ func newLocalProviders(res *resource.Resource) (*sdktrace.TracerProvider, *sdkme
 	return tp, mp
 }
 
+// exporterOptions turns endpoint into the trace and metric exporter options. A
+// bare host:port is insecure. A URL follows its scheme: http is plaintext and
+// https is TLS. The SDK's WithEndpointURL only logs a bad URL and falls back to
+// its default collector, so a bad one is rejected here.
+func exporterOptions(endpoint string) ([]otlptracegrpc.Option, []otlpmetricgrpc.Option, error) {
+	if !strings.Contains(endpoint, "://") {
+		return []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(endpoint), otlptracegrpc.WithInsecure()},
+			[]otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(endpoint), otlpmetricgrpc.WithInsecure()},
+			nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse otlp endpoint: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, nil, fmt.Errorf("otlp endpoint scheme %q: want http or https", u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, nil, fmt.Errorf("otlp endpoint %q has no host", endpoint)
+	}
+	return []otlptracegrpc.Option{otlptracegrpc.WithEndpointURL(endpoint)},
+		[]otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpointURL(endpoint)},
+		nil
+}
+
 // newExportingProviders builds providers that batch spans and periodically
-// push metrics over OTLP gRPC (insecure) to endpoint.
+// push metrics over OTLP gRPC to endpoint.
 func newExportingProviders(ctx context.Context, res *resource.Resource, endpoint string) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, error) {
-	traceExp, err := otlptrace.New(ctx,
-		otlptracegrpc.NewClient(
-			otlptracegrpc.WithEndpoint(endpoint),
-			otlptracegrpc.WithInsecure(),
-		),
-	)
+	traceOpts, metricOpts, err := exporterOptions(endpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	traceExp, err := otlptrace.New(ctx, otlptracegrpc.NewClient(traceOpts...))
 	if err != nil {
 		return nil, nil, fmt.Errorf("create otlp trace exporter: %w", err)
 	}
@@ -132,10 +159,7 @@ func newExportingProviders(ctx context.Context, res *resource.Resource, endpoint
 		sdktrace.WithResource(res),
 	)
 
-	metricExp, err := otlpmetricgrpc.New(ctx,
-		otlpmetricgrpc.WithEndpoint(endpoint),
-		otlpmetricgrpc.WithInsecure(),
-	)
+	metricExp, err := otlpmetricgrpc.New(ctx, metricOpts...)
 	if err != nil {
 		// Shut the trace provider down so a failed metrics wire-up leaves no
 		// half-initialized state behind.
