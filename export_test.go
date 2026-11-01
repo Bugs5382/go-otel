@@ -66,6 +66,10 @@ type otlpCollector struct {
 
 	logMu   sync.Mutex
 	logReqs []*collogspb.ExportLogsServiceRequest
+
+	wireMu     sync.Mutex
+	traceWire  strings.Builder
+	metricWire strings.Builder
 }
 
 type traceService struct {
@@ -78,6 +82,9 @@ func (s traceService) Export(ctx context.Context, req *coltracepb.ExportTraceSer
 		return nil, s.c.reject(ctx)
 	}
 	s.c.spans.Add(int64(len(req.GetResourceSpans())))
+	s.c.wireMu.Lock()
+	defer s.c.wireMu.Unlock()
+	s.c.traceWire.WriteString(req.String())
 	return &coltracepb.ExportTraceServiceResponse{}, nil
 }
 
@@ -91,6 +98,9 @@ func (s metricService) Export(ctx context.Context, req *colmetricpb.ExportMetric
 		return nil, s.c.reject(ctx)
 	}
 	s.c.metrics.Add(int64(len(req.GetResourceMetrics())))
+	s.c.wireMu.Lock()
+	defer s.c.wireMu.Unlock()
+	s.c.metricWire.WriteString(req.String())
 	return &colmetricpb.ExportMetricsServiceResponse{}, nil
 }
 

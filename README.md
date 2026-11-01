@@ -1,6 +1,6 @@
 # go-otel 🔭
 
-> 📡 Tiny OpenTelemetry bootstrap for Go services — one call wires OTLP/gRPC trace **and** metric exporters into global providers, installs W3C trace-context propagation, and ships instrument helpers, RED HTTP middleware and opt-in filtered log export.
+> 📡 Tiny OpenTelemetry bootstrap for Go services — one call wires OTLP/gRPC trace **and** metric exporters into global providers, installs W3C trace-context propagation, and ships instrument helpers, RED HTTP middleware, opt-in filtered log export and default-deny telemetry filters.
 
 ## 📦 Install
 
@@ -26,8 +26,9 @@ if err != nil {
 defer shutdown(context.Background())
 ```
 
-Traces and metrics export over OTLP/gRPC to the given endpoint. Logs are opt-in:
-see [Logs](#-logs). 📈
+Traces and metrics export over OTLP/gRPC to the given endpoint, unfiltered unless
+you ask for the [telemetry filter](#-telemetry-filter). Logs are opt-in: see
+[Logs](#-logs). 📈
 
 The endpoint is a bare `host:port` or a URL with a port:
 
@@ -99,9 +100,9 @@ them off.
 The state follows the latest successful `Init`, and is safe to read from any
 goroutine. `LastError` has the endpoint password, any URL userinfo and the values
 of the `OTEL_EXPORTER_OTLP_HEADERS` variables removed, even if a collector echoes
-them back. A header set some other way isn't known to go-otel, and neither is a
-secret a collector makes up on its own, so treat `LastError` as text for
-operators.
+them back, and it goes through the [redactor](#redaction). A header set some other
+way isn't known to go-otel, and neither is a secret a collector makes up on its
+own, so treat `LastError` as text for operators.
 
 ## 📜 Logs
 
@@ -125,15 +126,17 @@ shutdown, err := otel.InitWithOptions(ctx, "my-service", "https://collector:4317
 )
 ```
 
-`Write` always reports success and never waits on the network. If the collector
-falls behind, the queue drops its oldest records, and your logs still reach
-stdout. Only JSON lines are read, so `LOG_FORMAT=console` exports nothing.
+`Write` always reports success and doesn't wait on the network, with one
+exception: a `fatal` or `panic` line waits up to 2 seconds for the queue to flush,
+because the process ends right after one. If the collector falls behind, the queue
+drops its oldest records, and your logs still reach stdout. Only JSON lines are
+read, so `LOG_FORMAT=console` exports nothing.
 
 ### What leaves the process
 
 🔒 **Default-deny.** A record carries its time, level, `service` and `message`,
-plus `trace_id` and `span_id` as the record's trace correlation. Everything else
-is dropped unless you name it. These filters apply to the export only: whatever
+plus `trace_id` and `span_id` as the record's trace correlation, which only pass
+as valid hex ids. Everything else is dropped unless you name it. These filters apply to the export only: whatever
 else your logger writes to is untouched.
 
 | Option | Effect |
@@ -180,11 +183,110 @@ allow-list is the main defense: keep it short.
 
 ### Collectors that aren't verified
 
-⚠️ Logs never go to a collector that isn't authenticated. With
-`WithInsecureSkipVerify(true)`, on any endpoint, logs stay off even with
+⚠️ With `WithInsecureSkipVerify(true)`, on any endpoint, logs stay off even with
 `WithLogs(true)`. Traces and metrics carry on, and `ExportState().Logs.Disabled`
 says why. To export logs to a private certificate, trust it instead, for example
-with `OTEL_EXPORTER_OTLP_CERTIFICATE`.
+with `OTEL_EXPORTER_OTLP_CERTIFICATE`. A plaintext endpoint (`host:port` or
+`http://`) doesn't authenticate the collector either, and logs do export over one,
+so use `https` when the network between the service and the collector isn't yours.
+
+## 🛡️ Telemetry filter
+
+With no options, go-otel exports what the SDK and its instrumentation give it, and
+that is a lot for a service that holds secrets. In a test run with a canary on
+every path, these all reached the collector:
+
+- exception events with stack traces, and status text: `otelgrpc` copies the gRPC
+  status message there, and `otelpgx` copies the database error;
+- span names holding full SQL, or whatever gRPC method a client sent;
+- `url.path`, `user_agent.original`, `client.address` from `X-Forwarded-For` and
+  `server.address` from `Host`, and `url.full` with its query on the `otelhttp`
+  transport;
+- a caller's `tracestate`, on the span and forwarded downstream, and a caller's
+  `baggage`, forwarded on every call;
+- everything in `OTEL_RESOURCE_ATTRIBUTES`, on all three signals;
+- raw paths and arbitrary methods in the `Metrics` labels, and exemplars.
+
+On stderr, the SDK printed malformed `OTEL_EXPORTER_OTLP_HEADERS` entries and
+endpoint URLs with their passwords.
+
+`WithTelemetryFilter(true)` turns on every filter, default-deny, and the allow
+options name what may leave:
+
+```go
+shutdown, err := otel.InitWithOptions(ctx, "my-service", "https://collector:4317",
+	otel.WithTelemetryFilter(true),
+	otel.WithTraceAllowSpanNames(regexp.MustCompile(`^my\.package\.v1\.[A-Za-z]+/[A-Za-z]+$`)),
+	otel.WithTraceAllowAttributes("rpc.method", "rpc.response.status_code"),
+	otel.WithMetricAllowAttributes("http.request.method", "http.route", "http.response.status_code",
+		"rpc.method", "rpc.response.status_code"),
+	otel.WithAttributeValuePattern("rpc.method", regexp.MustCompile(`^my\.package\.v1\.[A-Za-z]+/[A-Za-z]+$`)),
+)
+```
+
+Each allow option also turns on its own filter, if you want only that one.
+Without any of these options nothing changes.
+
+| Option | Effect |
+| --- | --- |
+| `WithTelemetryFilter(enabled)` | All of the below, and `WithBaggage(false)` and `WithRedactedErrors(true)`. |
+| `WithTraceAllowAttributes(names...)` | The attributes a span, event or link may carry. |
+| `WithTraceAllowEvents(names...)` | The span events that may leave. `exception` never does, even when named. |
+| `WithTraceAllowSpanNames(patterns...)` | The span names that may leave. Any other span stays in the trace, named `[span]`. |
+| `WithMetricAllowAttributes(names...)` | The attributes a data point may carry. The points aggregate without the rest. |
+| `WithResourceAllowAttributes(names...)` | The resource attributes that may leave, on top of `service.name`. |
+| `WithAttributeValuePattern(name, pattern)` | An allowed attribute whose value doesn't match is dropped, on traces and metrics. Use it for values from outside, such as `rpc.method`. |
+| `WithBaggage(enabled)` | Whether the propagator carries baggage. With it off, baggage neither comes in on a request nor goes out on a call. |
+| `WithRedactedErrors(enabled)` | Replaces the SDK's error handler and internal logger. See below. |
+
+### What leaves with the filters on
+
+🔒 **Traces.** A span keeps its ids, times, kind and status code. The status text
+goes, exception events and their stacks go, and trace state and scope attributes
+go, on the span and its links. Allowed attributes go through the
+[redactor](#redaction) and `WithLogRedactPatterns` and `WithLogRedactValues` apply.
+One that holds a private key with no END line, is over 64 KiB, or is bytes, a map or
+a nested value is dropped. The propagator also stops taking `tracestate` from
+callers, so it isn't forwarded.
+
+🔒 **Metrics.** An allowed attribute whose value the redactor would change is
+dropped rather than rewritten, so redaction never merges or renames a series. That
+check costs about 12 microseconds per string attribute per measurement. Exemplars
+stay off whatever `OTEL_METRICS_EXEMPLAR_FILTER` says, because an exemplar carries
+the attributes a view drops. Scope attributes go, and each instrument stays at 2000
+series whatever `OTEL_GO_X_CARDINALITY_LIMIT` says. The `Metrics` middleware reports
+`unmatched` for a request no route matched and `_OTHER` for a non-standard method,
+where it would otherwise report what the client sent.
+
+🔒 **Resource.** Only `service.name` and what you name leave, on traces, metrics and
+logs. The filter runs on each OTLP request as it's sent, because each SDK provider
+merges `OTEL_RESOURCE_ATTRIBUTES` back into the resource it's given.
+
+🔒 **Errors.** The SDK's error handler becomes one that logs the gRPC code, and its
+internal logger one that logs only the SDK's own message, through the standard
+`log` package, at most one line every 30 seconds. No error text is printed, because
+a malformed setting has nothing around it to say it's secret. That also means a bad
+setting shows only as `telemetry error: parse headers`: turn the option off in a
+safe environment to see more. `ExportState` still has the redacted text of the last
+export error. The option replaces a handler set before `Init`, and both stay
+installed after `shutdown`.
+
+### What the filters can't do
+
+⚠️ These stay your call, because go-otel can't see them or can't change them:
+
+- A secret in an allowed attribute with no shape around it. The allow-list is the
+  main defense, as it is for logs: keep it short, and don't allow `url.path`,
+  `db.query.text`, `user_agent.original` or `client.address` without a reason.
+- `traceparent` from outside. A public endpoint should start its own trace, with
+  `otelhttp.WithPublicEndpoint()`, so a caller can't choose your trace ids or
+  sampling.
+- What instrumentation puts in a name you allow. `otelpgx` builds its span name
+  from the SQL: `otelpgx.WithTrimSQLInSpanName()` gives names a pattern can
+  allow, and `otelpgx.WithDisableSQLStatementInAttributes()` stops the text at the
+  source. Don't use `otelpgx.WithIncludeQueryParameters()`.
+- OTLP headers from `OTEL_EXPORTER_OTLP_HEADERS` go to whatever collector the
+  endpoint names, in the clear on a plaintext endpoint.
 
 ## 📊 Metrics
 
@@ -209,6 +311,11 @@ mux.HandleFunc("GET /items/{id}", itemsHandler)
 
 http.ListenAndServe(":8080", otel.Metrics(mux))
 ```
+
+The pattern is read off the request after the mux runs, so a handler between the
+middleware and the mux that copies the request (`r.WithContext`) loses it. A request
+with no pattern reports its raw path as `http.route`, or `unmatched` with the
+[telemetry filter](#-telemetry-filter) on.
 
 ## 🧼 Neutral surface (no raw otel imports)
 
