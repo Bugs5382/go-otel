@@ -7,8 +7,8 @@ hook-enforced rules). Keep this file current when the build, layout, or public A
 
 A tiny OpenTelemetry bootstrap library for Go services. A single `Init` wires
 OTLP/gRPC trace and metric exporters into the global Tracer and Meter providers
-over one shared resource, with opt-in filtered log export, and the package adds instrument helpers plus RED HTTP
-middleware so consumers don't hand-roll setup.
+over one shared resource, with opt-in filtered log export and default-deny telemetry filters, and the package adds
+instrument helpers plus RED HTTP middleware so consumers don't hand-roll setup.
 
 ## Using go-otel
 
@@ -30,6 +30,13 @@ The public surface is small and additive; keep it stable:
   `WithLogRedactPatterns`, `WithLogRedactValues`. No filter may be bypassed: don't install the global
   `LoggerProvider`, and don't let an `otel/log` type into the public API (it isn't stable at this
   version).
+- `WithTelemetryFilter(bool)` — turns on every default-deny filter: trace, metric, resource, baggage
+  and SDK error redaction. `WithTraceAllowAttributes`, `WithTraceAllowEvents`, `WithTraceAllowSpanNames`
+  (`*regexp.Regexp`), `WithMetricAllowAttributes` and `WithResourceAllowAttributes` name what may pass and
+  each turns on its own filter, even with nothing named. `WithAttributeValuePattern(name, pattern)` bounds an
+  allowed value. `WithBaggage(bool)` and `WithRedactedErrors(bool)` control those two alone. All of them are
+  off by default and must stay additive: with none set, `Init` exports what it always has. The redactor is the
+  log one, so `WithLogRedactPatterns` and `WithLogRedactValues` apply. Exception events never pass, even named.
 - `ExportState() ExportStatus` — `Configured`, plus a `SignalStatus` (`LastSuccess`, `LastErrorAt`,
   `LastError`, `Disabled`) each for `Traces`, `Metrics` and `Logs`. Follows the latest successful `Init`; zero with no
   exporters. `LastError` is redacted text, never the raw error.
@@ -56,7 +63,9 @@ The public surface is small and additive; keep it stable:
   endpoint), resource, propagation, joined shutdown, options.
 - `export.go` - `ExportState`, the exporter wrappers that feed it, and error redaction.
 - `logs.go` - `LogWriter`, the log options and the field and level filters.
-- `redact.go` - the redactor for exported log text.
+- `redact.go` - the redactor for exported text.
+- `filter.go` - the telemetry filter options, the span exporter wrapper, the metric attribute filter, the
+  wire-level resource filter, the propagator and the redacted error handler and internal logger.
 - `metrics.go` - `Counter`/`Histogram` raw instrument helpers, plus the neutral `CounterMetric`/
   `HistogramMetric` interfaces and `NewCounter`/`NewHistogram` constructors that wrap them.
 - `attr.go` - neutral `Attr`/`KV`, and the internal conversion to `attribute.KeyValue`.
@@ -65,7 +74,9 @@ The public surface is small and additive; keep it stable:
 - `doc.go` - package doc.
 - `*_test.go` - table-free tests; metrics tests assert via an SDK `ManualReader`, not a collector.
   `export_test.go` runs a real in-process OTLP/gRPC collector, with TLS where it matters, and
-  `logs_test.go` uses it for every log filter.
+  `logs_test.go` uses it for every log filter. `filter_test.go` sends a canary down every path twice:
+  unfiltered to prove the path is real, and filtered to prove nothing gets out. Stderr and process exit need
+  a second process, so those tests re-run the test binary through `TestChildProcess`.
 - `example_test.go` - runnable `Example`/`ExampleGRPCServerStatsHandler` for the neutral surface.
 
 ## Build, test, lint
@@ -86,5 +97,9 @@ The public surface is small and additive; keep it stable:
   merged over `resource.Default()`, so they inherit the SDK's schema URL. Importing a versioned
   `semconv` package for the resource makes `resource.Merge` fail with `ErrSchemaURLConflict` the
   next time the SDK moves to a newer semconv.
+- Filtering the resource before giving it to a provider does nothing: each provider's `WithResource` merges
+  `OTEL_RESOURCE_ATTRIBUTES` back in, and a log record has no way to change its resource. Keep that filter on
+  the gRPC interceptor, at the wire.
+- A metric view moves the attributes it drops into exemplars, so exemplars must stay off wherever the view is on.
 - Traces and metrics use separate OTLP exporters (the SDK has no single dual-signal exporter) but
   share one endpoint and one resource, so keep them constructed together in `Init`.

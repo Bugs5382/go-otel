@@ -43,7 +43,10 @@ import (
 // Each measurement carries http.request.method, http.route, and
 // http.response.status_code attributes. It depends only on net/http, so it
 // composes with any stdlib-compatible router. Call Init first so the
-// instruments record against the global MeterProvider.
+// instruments record against the global MeterProvider. An http.route set from
+// the matched pattern needs the mux to get the same *http.Request: a handler
+// between them that copies the request loses the pattern, and http.route is then
+// the raw path, or "unmatched" with the metric filter on.
 func Metrics(next http.Handler) http.Handler {
 	duration := Histogram(
 		"http.server.request.duration",
@@ -62,7 +65,7 @@ func Metrics(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 
 		attrs := metric.WithAttributes(
-			attribute.String("http.request.method", r.Method),
+			attribute.String("http.request.method", method(r)),
 			attribute.String("http.route", route(r)),
 			attribute.Int("http.response.status_code", sw.status),
 		)
@@ -74,12 +77,30 @@ func Metrics(next http.Handler) http.Handler {
 // route reports a low-cardinality route label. It prefers the pattern matched
 // by the net/http 1.22+ ServeMux (for example "GET /items/{id}") and falls back
 // to the raw path when no pattern is set, keeping the caller free of any router
-// dependency.
+// dependency. With the metric filter on it falls back to "unmatched" instead,
+// because the raw path is whatever the client sent.
 func route(r *http.Request) string {
 	if p := r.Pattern; p != "" {
 		return p
 	}
+	if metricsFiltered.Load() {
+		return unmatchedRoute
+	}
 	return r.URL.Path
+}
+
+// method reports the request method. net/http serves any token as a method, so
+// with the metric filter on anything but a standard one becomes "_OTHER".
+func method(r *http.Request) string {
+	if !metricsFiltered.Load() {
+		return r.Method
+	}
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace:
+		return r.Method
+	}
+	return otherMethod
 }
 
 // statusWriter captures the response status code so it can be attached as a

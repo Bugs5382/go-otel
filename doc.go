@@ -11,6 +11,12 @@
 // WithLogs adds opt-in log export. LogWriter takes JSON log lines, such as
 // zerolog's, and exports what its default-deny filters let through.
 //
+// WithTelemetryFilter turns on default-deny filters for everything else that
+// leaves a service: span names, attributes, events, status text and trace state,
+// metric attributes and exemplars, the resource, baggage, and the text of SDK
+// errors. WithTraceAllowAttributes, WithMetricAllowAttributes and the other allow
+// options name what may pass. Without these options nothing is filtered.
+//
 // Counter, Histogram, and Metrics return or accept raw go.opentelemetry.io/otel
 // types and remain unchanged for existing callers. A consumer that wants to
 // avoid any raw otel import in its own code should instead use:

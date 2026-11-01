@@ -50,7 +50,7 @@ type SignalStatus struct {
 	// LastErrorAt is when an export last failed.
 	LastErrorAt time.Time
 	// LastError describes that failure, with the endpoint password, any URL
-	// userinfo and the OTLP header values removed.
+	// userinfo and the OTLP header values removed, and redacted like a log line.
 	LastError string
 	// Disabled says why the signal isn't exporting. It is empty when it is.
 	Disabled string
@@ -91,6 +91,7 @@ var activeTracker atomic.Pointer[exportTracker]
 
 type exportTracker struct {
 	redactor *strings.Replacer
+	shapes   *logRedactor
 	traces   signalTracker
 	metrics  signalTracker
 	logs     signalTracker
@@ -99,7 +100,10 @@ type exportTracker struct {
 }
 
 func newExportTracker(endpoint string, cfg config) *exportTracker {
-	t := &exportTracker{redactor: newRedactor(endpoint)}
+	t := &exportTracker{
+		redactor: newRedactor(endpoint),
+		shapes:   newLogRedactor(cfg.logs.redactValues, cfg.logs.redactPatterns),
+	}
 	switch {
 	case !cfg.logs.enabled:
 		t.logsOff = logsNotEnabled
@@ -110,7 +114,11 @@ func newExportTracker(endpoint string, cfg config) *exportTracker {
 }
 
 func (t *exportTracker) redact(err error) string {
-	return urlUserinfo.ReplaceAllString(t.redactor.Replace(err.Error()), "$1")
+	text := urlUserinfo.ReplaceAllString(t.redactor.Replace(err.Error()), "$1")
+	if scrubbed, ok := t.shapes.scrub(text); ok {
+		return scrubbed
+	}
+	return redactedValue
 }
 
 type signalTracker struct {

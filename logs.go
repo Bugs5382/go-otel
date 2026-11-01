@@ -33,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -57,6 +58,11 @@ const (
 const (
 	// maxLogLine bounds the work one line can cost the goroutine that logs it.
 	maxLogLine = 64 * 1024
+
+	// fatalFlushWait bounds the one wait in this package's write path. zerolog
+	// ends the process right after a fatal or panic line, so a record that only
+	// queued would never leave.
+	fatalFlushWait = 2 * time.Second
 
 	logsNotEnabled = "logs are off: WithLogs was not set"
 	logsUnverified = "logs are off: the collector's certificate is not verified"
@@ -141,8 +147,9 @@ func WithLogRedactValues(values ...string) Option {
 // that suits the startup order: until a WithLogs Init, and again after its
 // shutdown, it discards everything.
 //
-// Write always reports success and never waits on the network. A full queue
-// drops the oldest records. A line that isn't a JSON object, has no known level,
+// Write always reports success and doesn't wait on the network, except that a
+// fatal or panic line waits up to 2 seconds for the queue to flush, because the
+// process ends right after one. A full queue drops the oldest records. A line that isn't a JSON object, has no known level,
 // is over 64 KiB, or holds a private key with no END line isn't exported.
 func LogWriter() io.Writer { return logWriter{} }
 
@@ -163,6 +170,7 @@ var activeLogs atomic.Pointer[logEmitter]
 
 type logEmitter struct {
 	logger    log.Logger
+	flush     func(context.Context) error
 	minLevel  log.Severity
 	allow     map[string]bool
 	classOnly map[string]bool
@@ -177,6 +185,7 @@ func newLogEmitter(lp *sdklog.LoggerProvider, cfg logConfig) *logEmitter {
 	}
 	return &logEmitter{
 		logger:    lp.Logger("github.com/Bugs5382/go-otel"),
+		flush:     lp.ForceFlush,
 		minLevel:  minLevel,
 		allow:     nameSet(cfg.allow),
 		classOnly: nameSet(cfg.classOnly),
@@ -228,6 +237,13 @@ func (e *logEmitter) emit(line []byte) {
 		}
 	}
 	e.logger.Emit(correlated(fields), record)
+	if severity >= log.SeverityFatal {
+		ctx, cancel := context.WithTimeout(context.Background(), fatalFlushWait)
+		defer cancel()
+		if err := e.flush(ctx); err != nil {
+			otel.Handle(err)
+		}
+	}
 }
 
 // exported reports whether a field may reach the record. time, level and the

@@ -37,11 +37,12 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
 
@@ -69,6 +70,7 @@ type Option func(*config)
 type config struct {
 	insecureSkipVerify bool
 	logs               logConfig
+	filter             filterConfig
 }
 
 // WithInsecureSkipVerify turns off certificate validation on an https endpoint
@@ -86,6 +88,12 @@ func InitWithOptions(ctx context.Context, service, otlpEndpoint string, opts ...
 	var cfg config
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+
+	// Before anything reads the environment: the resource and the exporters
+	// print what they can't parse.
+	if cfg.filter.redactErrors {
+		installRedactedErrors()
 	}
 
 	res, err := newResource(service)
@@ -114,14 +122,12 @@ func InitWithOptions(ctx context.Context, service, otlpEndpoint string, opts ...
 	otel.SetMeterProvider(mp)
 	activeTracker.Store(tracker)
 	activeLogs.Store(emitter)
+	metricsFiltered.Store(cfg.filter.metrics)
 
 	// Install a global text-map propagator so W3C trace context and baggage
 	// flow across process boundaries. Without this, injected/extracted carriers
 	// are no-ops and traces break at every hop.
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	otel.SetTextMapPropagator(newPropagator(cfg.filter))
 
 	return func(ctx context.Context) error {
 		// Stop taking lines first, then flush, so a line can't land in a queue
@@ -224,13 +230,25 @@ func newExportingProviders(ctx context.Context, res *resource.Resource, endpoint
 		return nil, nil, nil, err
 	}
 
+	filter := newFilters(cfg)
+	if filter.resource != nil {
+		wire := grpc.WithChainUnaryInterceptor(filter.resource.interceptor)
+		opts.trace = append(opts.trace, otlptracegrpc.WithDialOption(wire))
+		opts.metric = append(opts.metric, otlpmetricgrpc.WithDialOption(wire))
+		opts.log = append(opts.log, otlploggrpc.WithDialOption(wire))
+	}
+
 	traceExp, err := otlptrace.New(ctx, otlptracegrpc.NewClient(opts.trace...))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create otlp trace exporter: %w", err)
 	}
 
+	var spanExporter sdktrace.SpanExporter = traceExp
+	if filter.traces != nil {
+		spanExporter = filteredSpanExporter{SpanExporter: spanExporter, filter: filter.traces}
+	}
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(trackedSpanExporter{SpanExporter: traceExp, tracker: tracker}),
+		sdktrace.WithBatcher(trackedSpanExporter{SpanExporter: spanExporter, tracker: tracker}),
 		sdktrace.WithResource(res),
 	)
 
@@ -242,10 +260,22 @@ func newExportingProviders(ctx context.Context, res *resource.Resource, endpoint
 		return nil, nil, nil, fmt.Errorf("create otlp metric exporter: %w", err)
 	}
 
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(trackedMetricExporter{Exporter: metricExp, tracker: tracker})),
+	var metricExporter sdkmetric.Exporter = metricExp
+	var metricOpts []sdkmetric.Option
+	if filter.metrics != nil {
+		metricExporter = filteredMetricExporter{Exporter: metricExporter}
+		// Exemplars keep the attributes a view drops, in the clear, so a view
+		// without this would move them instead of removing them.
+		metricOpts = append(metricOpts,
+			sdkmetric.WithView(sdkmetric.NewView(sdkmetric.Instrument{Name: "*"}, sdkmetric.Stream{AttributeFilter: filter.metrics.metricAttribute})),
+			sdkmetric.WithExemplarFilter(exemplar.AlwaysOffFilter),
+			sdkmetric.WithCardinalityLimit(metricCardinalityLimit),
+		)
+	}
+	mp := sdkmetric.NewMeterProvider(append(metricOpts,
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(trackedMetricExporter{Exporter: metricExporter, tracker: tracker})),
 		sdkmetric.WithResource(res),
-	)
+	)...)
 	if tracker.logsOff != "" {
 		return tp, mp, nil, nil
 	}

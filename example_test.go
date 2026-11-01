@@ -26,6 +26,7 @@ OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	gootel "github.com/Bugs5382/go-otel"
 	"google.golang.org/grpc"
@@ -54,4 +55,26 @@ func ExampleGRPCServerStatsHandler() {
 	_ = grpc.NewServer(grpc.StatsHandler(gootel.GRPCServerStatsHandler()))
 	fmt.Println("server configured")
 	// Output: server configured
+}
+
+// ExampleWithTelemetryFilter opts a service into the default-deny filters and
+// names what may leave.
+func ExampleWithTelemetryFilter() {
+	ctx := context.Background()
+	method := regexp.MustCompile(`^my\.package\.v1\.[A-Za-z]+/[A-Za-z]+$`)
+	shutdown, err := gootel.InitWithOptions(ctx, "my-service", "",
+		gootel.WithTelemetryFilter(true),
+		gootel.WithTraceAllowSpanNames(method),
+		gootel.WithTraceAllowAttributes("rpc.method"),
+		gootel.WithMetricAllowAttributes("rpc.method", "http.route"),
+		gootel.WithAttributeValuePattern("rpc.method", method),
+	)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() { _ = shutdown(ctx) }()
+
+	fmt.Println("filtered")
+	// Output: filtered
 }
