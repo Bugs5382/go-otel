@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -51,6 +52,8 @@ type SignalStatus struct {
 	// LastError describes that failure, with the endpoint password, any URL
 	// userinfo and the OTLP header values removed.
 	LastError string
+	// Disabled says why the signal isn't exporting. It is empty when it is.
+	Disabled string
 }
 
 // ExportStatus is what ExportState returns.
@@ -63,10 +66,13 @@ type ExportStatus struct {
 	Traces SignalStatus
 	// Metrics is the metric export history.
 	Metrics SignalStatus
+	// Logs is the log export history. Unless WithLogs turned logs on and they
+	// are exporting, it holds only Disabled.
+	Logs SignalStatus
 }
 
 // ExportState reports how exports have gone since the latest successful Init,
-// separately for traces and metrics. It is safe for concurrent use. The history
+// separately for traces, metrics and logs. It is safe for concurrent use. The history
 // fills in on the exporters' own schedules, so right after Init both signals
 // are zero. It keeps its last values after shutdown.
 func ExportState() ExportStatus {
@@ -74,7 +80,9 @@ func ExportState() ExportStatus {
 	if t == nil {
 		return ExportStatus{}
 	}
-	return ExportStatus{Configured: true, Traces: t.traces.status(), Metrics: t.metrics.status()}
+	logs := t.logs.status()
+	logs.Disabled = t.logsOff
+	return ExportStatus{Configured: true, Traces: t.traces.status(), Metrics: t.metrics.status(), Logs: logs}
 }
 
 // activeTracker follows Init the way the global providers do: the latest
@@ -85,10 +93,20 @@ type exportTracker struct {
 	redactor *strings.Replacer
 	traces   signalTracker
 	metrics  signalTracker
+	logs     signalTracker
+	// logsOff says why logs don't export. It doesn't change after Init.
+	logsOff string
 }
 
-func newExportTracker(endpoint string) *exportTracker {
-	return &exportTracker{redactor: newRedactor(endpoint)}
+func newExportTracker(endpoint string, cfg config) *exportTracker {
+	t := &exportTracker{redactor: newRedactor(endpoint)}
+	switch {
+	case !cfg.logs.enabled:
+		t.logsOff = logsNotEnabled
+	case cfg.insecureSkipVerify:
+		t.logsOff = logsUnverified
+	}
+	return t
 }
 
 func (t *exportTracker) redact(err error) string {
@@ -149,6 +167,17 @@ func (e trackedMetricExporter) Export(ctx context.Context, rm *metricdata.Resour
 	return err
 }
 
+type trackedLogExporter struct {
+	sdklog.Exporter
+	tracker *exportTracker
+}
+
+func (e trackedLogExporter) Export(ctx context.Context, records []sdklog.Record) error {
+	err := e.Exporter.Export(ctx, records)
+	e.tracker.record(&e.tracker.logs, err)
+	return err
+}
+
 const redactedValue = "[redacted]"
 
 var urlUserinfo = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s"'@]+@`)
@@ -163,7 +192,7 @@ func newRedactor(endpoint string) *strings.Replacer {
 			secrets = append(secrets, pw)
 		}
 	}
-	for _, name := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_HEADERS"} {
+	for _, name := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS"} {
 		secrets = append(secrets, headerValues(os.Getenv(name))...)
 	}
 

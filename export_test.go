@@ -42,6 +42,7 @@ import (
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
@@ -62,6 +63,9 @@ type otlpCollector struct {
 	metrics atomic.Int64
 	reject  func(ctx context.Context) error
 	srv     *grpc.Server
+
+	logMu   sync.Mutex
+	logReqs []*collogspb.ExportLogsServiceRequest
 }
 
 type traceService struct {
@@ -90,6 +94,21 @@ func (s metricService) Export(ctx context.Context, req *colmetricpb.ExportMetric
 	return &colmetricpb.ExportMetricsServiceResponse{}, nil
 }
 
+type logService struct {
+	collogspb.UnimplementedLogsServiceServer
+	c *otlpCollector
+}
+
+func (s logService) Export(ctx context.Context, req *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
+	if s.c.reject != nil {
+		return nil, s.c.reject(ctx)
+	}
+	s.c.logMu.Lock()
+	defer s.c.logMu.Unlock()
+	s.c.logReqs = append(s.c.logReqs, req)
+	return &collogspb.ExportLogsServiceResponse{}, nil
+}
+
 // serve starts c on addr, with TLS when cert is non-nil.
 func (c *otlpCollector) serve(t *testing.T, addr string, cert *tls.Certificate) {
 	t.Helper()
@@ -107,6 +126,7 @@ func (c *otlpCollector) serve(t *testing.T, addr string, cert *tls.Certificate) 
 	srv := grpc.NewServer(opts...)
 	coltracepb.RegisterTraceServiceServer(srv, traceService{c: c})
 	colmetricpb.RegisterMetricsServiceServer(srv, metricService{c: c})
+	collogspb.RegisterLogsServiceServer(srv, logService{c: c})
 	go func() { _ = srv.Serve(lis) }()
 	c.addr, c.srv = lis.Addr().String(), srv
 	t.Cleanup(srv.Stop)
