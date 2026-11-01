@@ -7,7 +7,7 @@ hook-enforced rules). Keep this file current when the build, layout, or public A
 
 A tiny OpenTelemetry bootstrap library for Go services. A single `Init` wires
 OTLP/gRPC trace and metric exporters into the global Tracer and Meter providers
-over one shared resource, and the package adds instrument helpers plus RED HTTP
+over one shared resource, with opt-in filtered log export, and the package adds instrument helpers plus RED HTTP
 middleware so consumers don't hand-roll setup.
 
 ## Using go-otel
@@ -20,6 +20,19 @@ The public surface is small and additive; keep it stable:
   fails `Init`. The `shutdown` flushes both pipelines. An empty (or all-whitespace) endpoint installs the providers and propagator with
   no exporter, so trace context still propagates while spans and metrics are dropped. Existing
   trace-only callers must keep working unchanged.
+- `InitWithOptions(ctx, service, otlpEndpoint, opts ...Option)` — `Init` with options; `Init` calls it
+  with none. `WithInsecureSkipVerify(bool)` turns off certificate validation on `https` endpoints and
+  does nothing on plaintext ones, except that logs stay off whenever it's on.
+- `WithLogs(bool)` and `LogWriter() io.Writer` — opt-in log export over the same endpoint, TLS,
+  resource and shutdown flush. `LogWriter` takes JSON lines, is a no-op outside a logs Init, always
+  reports success and never blocks. Filters are export-only and default-deny: `WithLogAllowFields`,
+  `WithLogClassOnlyFields`, `WithLogDropFields`, `WithLogMinLevel` (`LogLevel`, default info),
+  `WithLogRedactPatterns`, `WithLogRedactValues`. No filter may be bypassed: don't install the global
+  `LoggerProvider`, and don't let an `otel/log` type into the public API (it isn't stable at this
+  version).
+- `ExportState() ExportStatus` — `Configured`, plus a `SignalStatus` (`LastSuccess`, `LastErrorAt`,
+  `LastError`, `Disabled`) each for `Traces`, `Metrics` and `Logs`. Follows the latest successful `Init`; zero with no
+  exporters. `LastError` is redacted text, never the raw error.
 - `Counter(name, description string) metric.Int64Counter` and
   `Histogram(name, description, unit string) metric.Float64Histogram` — build instruments off the
   global meter; they panic only on a malformed instrument name (a programming error). Raw-returning;
@@ -39,8 +52,11 @@ The public surface is small and additive; keep it stable:
 
 ## Layout
 
-- `otel.go` - `Init`: trace + metric providers (exporting, or local when no endpoint), resource,
-  propagation, joined shutdown.
+- `otel.go` - `Init`/`InitWithOptions`: trace + metric providers (exporting, or local when no
+  endpoint), resource, propagation, joined shutdown, options.
+- `export.go` - `ExportState`, the exporter wrappers that feed it, and error redaction.
+- `logs.go` - `LogWriter`, the log options and the field and level filters.
+- `redact.go` - the redactor for exported log text.
 - `metrics.go` - `Counter`/`Histogram` raw instrument helpers, plus the neutral `CounterMetric`/
   `HistogramMetric` interfaces and `NewCounter`/`NewHistogram` constructors that wrap them.
 - `attr.go` - neutral `Attr`/`KV`, and the internal conversion to `attribute.KeyValue`.
@@ -48,12 +64,14 @@ The public surface is small and additive; keep it stable:
 - `middleware.go` - `Metrics` RED HTTP middleware.
 - `doc.go` - package doc.
 - `*_test.go` - table-free tests; metrics tests assert via an SDK `ManualReader`, not a collector.
+  `export_test.go` runs a real in-process OTLP/gRPC collector, with TLS where it matters, and
+  `logs_test.go` uses it for every log filter.
 - `example_test.go` - runnable `Example`/`ExampleGRPCServerStatsHandler` for the neutral surface.
 
 ## Build, test, lint
 
 - Build: `task build`
-- Test: `task test` (no external service required; tests use an in-process manual reader)
+- Test: `task test` (no external service required; tests use an in-process manual reader and collector)
 - Lint: `task lint` (runs tests, then gofmt check + golangci-lint + yamllint)
 - License headers: `task license` (verify) / `task license:fix` (inject)
 
